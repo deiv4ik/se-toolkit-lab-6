@@ -13,4 +13,6 @@ __pycache__/
 
 tmp
 
-**/settings.local.json
+**/settings.local.json.env
+debug.log
+.env
