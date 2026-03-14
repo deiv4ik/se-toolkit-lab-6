@@ -1,19 +1,26 @@
-# Agent Documentation
+## Task 2: Documentation Agent
 
-## Overview
-This agent connects to Qwen LLM and returns answers in JSON format.
+### Tools
+The agent now has two tools:
+- **read_file(path)** - reads a file from the project
+- **list_files(path)** - lists contents of a directory
 
-## LLM Provider
-- **Provider**: Qwen Code API via local proxy
-- **Model**: qwen3-coder-plus
-- **API Base**: http://10.93.26.27:42005/v1
+### Agentic Loop
+1. Send question + tool definitions to LLM
+2. If LLM requests tools → execute them, add results to history, repeat
+3. If LLM gives text answer → extract answer and source, output JSON
+4. Maximum 10 tool calls to prevent infinite loops
 
-## Setup
-1. Copy `.env.agent.example` to `.env.agent.secret`
-2. Fill in your API key and endpoint
-3. Run with: `uv run agent.py "your question"`
+### Security
+Both tools prevent directory traversal attacks by checking that all paths are within the project root directory.
 
-## Output Format
-The agent outputs a single JSON line:
+### Output Format
 ```json
-{"answer": "response text", "tool_calls": []}
+{
+  "answer": "The answer text",
+  "source": "wiki/filename.md#section",
+  "tool_calls": [
+    {"tool": "list_files", "args": {"path": "wiki"}, "result": "file listing..."},
+    {"tool": "read_file", "args": {"path": "wiki/git-workflow.md"}, "result": "file content..."}
+  ]
+}
