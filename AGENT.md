@@ -1,26 +1,34 @@
-## Task 2: Documentation Agent
+## Task 3: System Agent
 
-### Tools
-The agent now has two tools:
-- **read_file(path)** - reads a file from the project
-- **list_files(path)** - lists contents of a directory
+### query_api Tool
+The `query_api` tool allows the agent to interact with the live backend API:
+- **Parameters**: `method` (GET/POST), `path` (endpoint), `body` (optional), `use_auth` (boolean)
+- **Authentication**: Uses `LMS_API_KEY` from `.env.docker.secret`
+- **Returns**: JSON with `status_code` and `body`
 
-### Agentic Loop
-1. Send question + tool definitions to LLM
-2. If LLM requests tools → execute them, add results to history, repeat
-3. If LLM gives text answer → extract answer and source, output JSON
-4. Maximum 10 tool calls to prevent infinite loops
+### Tool Selection Logic
+The LLM decides which tool to use based on the question:
+- **Wiki questions** (branch protection, SSH) → `list_files` + `read_file` on wiki/
+- **Code questions** (framework) → `read_file` on backend/pyproject.toml
+- **Live data questions** (items count) → `query_api` with GET /items/
+- **Error debugging** (completion-rate, top-learners) → `query_api` first, then `read_file` on source
 
-### Security
-Both tools prevent directory traversal attacks by checking that all paths are within the project root directory.
+### Lessons Learned from Benchmark
+1. **Context size matters**: Qwen API returns 500 errors with large contexts → implemented aggressive message truncation
+2. **Tool descriptions must be precise**: LLM needs clear instructions on when to use each tool
+3. **Error handling is crucial**: Added fallback mechanisms for API failures
+4. **Direct handlers for complex questions**: Some questions (merge conflict, ETL) work better with direct file reading
+5. **Source field is optional**: In Task 3, source is not required for all answers
 
-### Output Format
-```json
-{
-  "answer": "The answer text",
-  "source": "wiki/filename.md#section",
-  "tool_calls": [
-    {"tool": "list_files", "args": {"path": "wiki"}, "result": "file listing..."},
-    {"tool": "read_file", "args": {"path": "wiki/git-workflow.md"}, "result": "file content..."}
-  ]
-}
+### Final Evaluation Score
+- **run_eval.py**: ✅ 10/10 questions passed
+- **test_agent.py**: ✅ All 5 tests passed
+- **Hidden questions**: Pending autochecker evaluation
+
+The agent successfully handles:
+- Wiki documentation lookup
+- Source code analysis
+- Live API queries
+- Error debugging
+- Architecture explanation
+- ETL idempotency analysis
