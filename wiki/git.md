@@ -1,3 +1,3 @@
 # Git
 
-General git information.
+Git is a distributed version control system.

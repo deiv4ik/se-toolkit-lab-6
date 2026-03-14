@@ -1,0 +1,16 @@
+[project]
+name = "se-toolkit-lab-6"
+version = "0.1.0"
+description = "Software Engineering Toolkit Lab 6"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.4.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
