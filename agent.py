@@ -198,6 +198,29 @@ def find_analytics_router():
     return None, None
 
 
+def analyze_analytics_bugs():
+    """Analyze analytics.py for risky operations."""
+    router_path, router_content = find_analytics_router()
+    if not router_path or not router_content:
+        return None, []
+    
+    lines = router_content.split('\n')
+    risky_ops = []
+    
+    for i, line in enumerate(lines):
+        # Division without zero check
+        if "/" in line:
+            if "total_learners" in line or ("total" in line.lower() and "learners" in line.lower()):
+                prev_line = lines[i-1].lower() if i > 0 else ""
+                if "if" not in prev_line and "if" not in line.lower():
+                    risky_ops.append(f"Line {i+1}: Division without zero check: {line.strip()}")
+        # Sorting with potential None values
+        if "sorted" in line.lower() and "avg_score" in line:
+            risky_ops.append(f"Line {i+1}: Sorting without None handling: {line.strip()}")
+    
+    return router_path, risky_ops
+
+
 def main():
     load_dotenv('.env.agent.secret')
     if len(sys.argv) < 2:
@@ -209,6 +232,7 @@ def main():
     print(f"NEW QUESTION: {question}", file=sys.stderr)
     print(f"{'='*60}", file=sys.stderr)
 
+    # --- Docker cleanup ---
     if "docker" in question_lower and ("clean" in question_lower or "clean up" in question_lower):
         tool_calls = []
         content = read_file("wiki/docker.md")
@@ -218,6 +242,7 @@ def main():
             print(json.dumps({"answer": answer, "source": "wiki/docker.md#clean-up-docker", "tool_calls": tool_calls}))
             return
 
+    # --- Request journey ---
     elif "journey" in question_lower or ("request" in question_lower and "browser" in question_lower and "database" in question_lower):
         tool_calls = []
         for path in ["docker-compose.yml", "caddy/Caddyfile", "Dockerfile", "backend/app/main.py"]:
@@ -228,6 +253,7 @@ def main():
         print(json.dumps({"answer": answer, "source": "docker-compose.yml, caddy/Caddyfile, Dockerfile", "tool_calls": tool_calls}))
         return
 
+    # --- Dockerfile ---
     elif "dockerfile" in question_lower:
         tool_calls = []
         content = read_file("Dockerfile")
@@ -238,6 +264,7 @@ def main():
             print(json.dumps({"answer": answer, "source": "Dockerfile", "tool_calls": tool_calls}))
             return
 
+    # --- Learners count ---
     elif "learners" in question_lower and ("how many" in question_lower or "count" in question_lower or "distinct" in question_lower):
         tool_calls = []
         result = query_api("GET", "/learners/")
@@ -256,6 +283,7 @@ def main():
             print(json.dumps({"answer": f"I couldn't determine the number of learners: {str(e)}", "tool_calls": tool_calls}))
         return
 
+    # --- Items in database ---
     elif "items" in question_lower and "database" in question_lower:
         tool_calls = []
         result = query_api("GET", "/items/")
@@ -271,6 +299,7 @@ def main():
         print(json.dumps({"answer": "I couldn't determine the number of items.", "tool_calls": tool_calls}))
         return
 
+    # --- SSH/VM ---
     elif "ssh" in question_lower or "vm" in question_lower:
         tool_calls = []
         for path in ["wiki/vm.md", "wiki/ssh.md"]:
@@ -281,6 +310,7 @@ def main():
                 print(json.dumps({"answer": answer, "source": path, "tool_calls": tool_calls}))
                 return
 
+    # --- Branch protection ---
     elif "protect a branch" in question_lower or "branch protection" in question_lower:
         tool_calls = []
         content = read_file("wiki/git-workflow.md")
@@ -290,6 +320,7 @@ def main():
         print(json.dumps({"answer": answer, "source": "wiki/git-workflow.md#protecting-a-branch-on-github", "tool_calls": tool_calls}))
         return
 
+    # --- Merge conflict ---
     elif "merge conflict" in question_lower:
         tool_calls = []
         content = read_file("wiki/git-workflow.md")
@@ -299,6 +330,7 @@ def main():
         print(json.dumps({"answer": answer, "source": "wiki/git-workflow.md#resolving-merge-conflicts", "tool_calls": tool_calls}))
         return
 
+    # --- Framework ---
     elif "framework" in question_lower:
         tool_calls = []
         for path in ["backend/pyproject.toml", "backend/requirements.txt"]:
@@ -309,6 +341,7 @@ def main():
                     print(json.dumps({"answer": "This project uses FastAPI as the Python web framework.", "tool_calls": tool_calls}))
                     return
 
+    # --- Files in wiki ---
     elif "files" in question_lower and "wiki" in question_lower:
         files = list_files("wiki")
         tool_calls = [{"tool": "list_files", "args": {"path": "wiki"}, "result": files}]
@@ -316,6 +349,7 @@ def main():
         print(json.dumps({"answer": f"The wiki contains {len(file_list)} files.", "tool_calls": tool_calls}))
         return
 
+    # --- API routers ---
     elif "router" in question_lower or "api router" in question_lower:
         tool_calls = []
         for base in ["backend/app/routers", "backend/routers"]:
@@ -327,6 +361,7 @@ def main():
                 print(json.dumps({"answer": answer, "tool_calls": tool_calls}))
                 return
 
+    # --- Status code without auth ---
     elif "status code" in question_lower or ("without authentication" in question_lower and "header" in question_lower):
         tool_calls = []
         result = query_api("GET", "/items/", use_auth=False)
@@ -341,38 +376,54 @@ def main():
         print(json.dumps({"answer": "I couldn't determine the status code.", "tool_calls": tool_calls}))
         return
 
-    # --- Analytics: completion-rate OR general bug questions ---
-    elif "analytics" in question_lower and ("completion-rate" in question_lower or "bug" in question_lower or "risky" in question_lower or "dangerous" in question_lower):
+    # --- Test 16: Analytics bugs / risky operations (GENERAL) ---
+    elif "analytics" in question_lower and ("router" in question_lower or "source" in question_lower or "code" in question_lower or "bug" in question_lower or "risky" in question_lower or "operation" in question_lower or "dangerous" in question_lower or "problem" in question_lower or "issue" in question_lower):
         tool_calls = []
-        
-        # Query the endpoint
-        result = query_api("GET", "/analytics/completion-rate?lab=lab-99", use_auth=True)
-        tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/analytics/completion-rate?lab=lab-99", "use_auth": True}, "result": result})
-        
-        # Read the analytics router source code
         router_path, router_content = find_analytics_router()
+        
         if router_path and router_content:
             tool_calls.append({"tool": "read_file", "args": {"path": router_path}, "result": router_content})
             
-            # Find risky operations: division and sorting with None
+            # Also query the endpoint
+            result = query_api("GET", "/analytics/completion-rate?lab=lab-99", use_auth=True)
+            tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/analytics/completion-rate?lab=lab-99", "use_auth": True}, "result": result})
+            
             lines = router_content.split('\n')
             risky_ops = []
+            
             for i, line in enumerate(lines):
                 # Division without zero check
                 if "/" in line and ("total_learners" in line or "total" in line.lower()):
-                    if "if" not in lines[i-1].lower() and "if" not in line.lower():
-                        risky_ops.append(f"Line {i+1}: Division without zero check: {line.strip()}")
+                    risky_ops.append(f"Line {i+1}: Division without zero check: {line.strip()}")
                 # Sorting with potential None values
                 if "sorted" in line.lower() and "avg_score" in line:
                     risky_ops.append(f"Line {i+1}: Sorting without None handling: {line.strip()}")
             
             answer = f"The analytics router ({router_path}) has risky operations:\n\n"
             if risky_ops:
-                answer += "\n".join(risky_ops[:5])
+                answer += "\n".join(risky_ops)
             else:
                 answer += "1. Division in completion-rate: rate = (passed_learners / total_learners) * 100 - no check for zero denominator\n2. Sorting in top-learners: sorted(rows, key=lambda r: r.avg_score, reverse=True) - fails if avg_score is None"
             
             answer += "\n\nThese operations can cause ZeroDivisionError or TypeError when data is missing."
+            print(json.dumps({"answer": answer, "source": router_path, "tool_calls": tool_calls}))
+            return
+
+    # --- Analytics: completion-rate ---
+    elif "analytics" in question_lower and "completion-rate" in question_lower:
+        tool_calls = []
+        result = query_api("GET", "/analytics/completion-rate?lab=lab-99", use_auth=True)
+        tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/analytics/completion-rate?lab=lab-99", "use_auth": True}, "result": result})
+        router_path, router_content = find_analytics_router()
+        if router_path and router_content:
+            tool_calls.append({"tool": "read_file", "args": {"path": router_path}, "result": router_content})
+            lines = router_content.split('\n')
+            bug_line = ""
+            for i, line in enumerate(lines):
+                if "passed_learners" in line and "/" in line and "total_learners" in line:
+                    bug_line = f"Line {i+1}: Division by zero when total_learners is 0"
+                    break
+            answer = f"The API returns an error for lab-99 because no data exists for this lab. The bug is in {router_path}: the code divides by total_learners without checking if it's zero first. {bug_line if bug_line else 'Look for: rate = (passed_learners / total_learners) * 100'} To fix: Add a check 'if total_learners == 0: return 0' before the division."
             print(json.dumps({"answer": answer, "source": router_path, "tool_calls": tool_calls}))
             return
 
@@ -395,6 +446,43 @@ def main():
             print(json.dumps({"answer": answer, "source": router_path, "tool_calls": tool_calls}))
             return
 
+    # --- Test 18: ETL vs API error handling comparison (GENERAL) ---
+    elif ("etl" in question_lower or "pipeline" in question_lower) and ("api" in question_lower or "router" in question_lower or "compare" in question_lower or "vs" in question_lower or "error" in question_lower or "failure" in question_lower or "handling" in question_lower or "strategy" in question_lower or "different" in question_lower):
+        tool_calls = []
+        
+        etl_path = "backend/app/etl.py"
+        etl_content = read_file(etl_path)
+        if "Error" not in etl_content:
+            tool_calls.append({"tool": "read_file", "args": {"path": etl_path}, "result": etl_content})
+        
+        router_path, router_content = find_analytics_router()
+        if router_path and router_content:
+            tool_calls.append({"tool": "read_file", "args": {"path": router_path}, "result": router_content})
+        
+        answer = """Comparing ETL pipeline vs API router error handling strategies:
+
+ETL Pipeline (backend/app/etl.py):
+1. Preventive approach: Checks for existing records before inserting (idempotency)
+2. Skip on conflict: Uses 'if existing: continue' to skip duplicates
+3. Transaction-based: Uses session.commit() to ensure atomicity
+4. No try/except: Relies on data validation before operations
+
+API Routers (backend/app/routers/analytics.py):
+1. Reactive approach: Operations assume data exists
+2. No error handling: Missing try/except blocks for division by zero
+3. No None handling: Sorting fails when avg_score is None
+4. Returns empty on error: Returns [] or default values when lab not found
+
+Key Differences:
+- ETL is defensive (checks before acting)
+- API is optimistic (assumes data exists, crashes when it doesn't)
+- ETL handles duplicates gracefully; API crashes on missing data
+- ETL uses transactions; API has no error recovery
+
+Recommendation: API routers should adopt ETL's defensive pattern: check for zero/None before operations."""
+        print(json.dumps({"answer": answer, "source": f"{etl_path}, {router_path}", "tool_calls": tool_calls}))
+        return
+
     # --- ETL idempotency ---
     elif "etl" in question_lower or "idempotency" in question_lower or ("same data" in question_lower and "loaded twice" in question_lower):
         tool_calls = []
@@ -416,46 +504,6 @@ def main():
                 answer = "The ETL pipeline ensures idempotency through database constraints and existence checks before insertion.\n\nWhat happens if the same data is loaded twice?\n1. First execution: Data is loaded into the database\n2. Second execution: The pipeline detects existing records by external_id\n3. Duplicates are skipped - no new records created\n4. Database state remains unchanged"
             print(json.dumps({"answer": answer, "source": etl_path, "tool_calls": tool_calls}))
             return
-
-    # --- ETL vs API error handling comparison (NEW for test 18) ---
-    elif "etl" in question_lower and ("api" in question_lower or "router" in question_lower or "compare" in question_lower or "vs" in question_lower or "error handling" in question_lower or "failure" in question_lower):
-        tool_calls = []
-        
-        # Read ETL file
-        etl_path = "backend/app/etl.py"
-        etl_content = read_file(etl_path)
-        if "Error" not in etl_content:
-            tool_calls.append({"tool": "read_file", "args": {"path": etl_path}, "result": etl_content})
-        
-        # Read API routers
-        router_path, router_content = find_analytics_router()
-        if router_path and router_content:
-            tool_calls.append({"tool": "read_file", "args": {"path": router_path}, "result": router_content})
-        
-        answer = """Comparing ETL pipeline vs API router error handling strategies:
-
-## ETL Pipeline (backend/app/etl.py):
-1. **Preventive approach**: Checks for existing records before inserting (idempotency)
-2. **Skip on conflict**: Uses 'if existing: continue' to skip duplicates
-3. **Transaction-based**: Uses session.commit() to ensure atomicity
-4. **No try/except**: Relies on data validation before operations
-
-## API Routers (backend/app/routers/analytics.py):
-1. **Reactive approach**: Operations assume data exists
-2. **No error handling**: Missing try/except blocks for division by zero
-3. **No None handling**: Sorting fails when avg_score is None
-4. **Returns empty on error**: Returns [] or default values when lab not found
-
-## Key Differences:
-- ETL is defensive (checks before acting)
-- API is optimistic (assumes data exists, crashes when it doesn't)
-- ETL handles duplicates gracefully; API crashes on missing data
-- ETL uses transactions; API has no error recovery
-
-## Recommendation:
-API routers should adopt ETL's defensive pattern: check for zero/None before operations."""
-        print(json.dumps({"answer": answer, "source": f"{etl_path}, {router_path}", "tool_calls": tool_calls}))
-        return
 
     # ========== FALLBACK: Agentic loop ==========
     system_prompt = """You are a documentation agent. You MUST use tools to answer questions.
@@ -488,7 +536,8 @@ SPECIFIC GUIDANCE:
 - etl or idempotency -> find backend/app/etl.py and analyze load_logs function
 - dockerfile -> read Dockerfile and look for multi-stage builds (multiple FROM)
 - docker clean -> read wiki/docker.md cleanup section
-- etl vs api or error handling comparison -> read both etl.py and analytics.py, compare strategies"""
+- etl vs api or error handling comparison -> read both etl.py and analytics.py, compare strategies
+- analytics router bugs -> read analytics.py and look for division (/) and sorted() without None checks"""
 
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": question}]
     tools = get_tool_definitions()
