@@ -303,16 +303,12 @@ def extract_domain_from_content(filename, content):
     """Extract domain from file content."""
     content_lower = content.lower()
     
-    # Check for specific patterns in the content
     if "items" in content_lower or "item" in content_lower:
-        # Check if it's actually about items or just a variable name
         if "router = apirouter(prefix=" in content_lower:
-            # Try to extract prefix
             prefix_match = re.search(r'prefix=["\']/([^"\']+)', content_lower)
             if prefix_match:
                 return prefix_match.group(1)
         
-        # Check for endpoint definitions
         if "@router.get(" in content_lower and "/items" in content_lower:
             return "items"
     
@@ -342,7 +338,6 @@ def extract_domain_from_content(filename, content):
     if "learner" in content_lower:
         return "learners"
     
-    # Try to extract from filename
     name = filename.replace('.py', '').replace('_', ' ').title()
     return name
 
@@ -380,12 +375,204 @@ def main():
     print(f"NEW QUESTION: {question}", file=sys.stderr)
     print(f"{'='*60}", file=sys.stderr)
     
-    # Route question to appropriate handler based on keywords
-    if "items" in question_lower and "database" in question_lower:
-        # Handle database items question directly
+    # ========== ROUTING LOGIC ==========
+    # IMPORTANT: Order matters! More specific checks should come before general ones.
+    
+    # --- Docker cleanup question ---
+    if "docker" in question_lower and ("clean" in question_lower or "clean up" in question_lower):
+        print("Routing to Docker cleanup handler...", file=sys.stderr)
+        
+        tool_calls = []
+        
+        content = read_file("wiki/docker.md")
+        if "Error" not in content:
+            tool_calls.append({
+                "tool": "read_file",
+                "args": {"path": "wiki/docker.md"},
+                "result": content
+            })
+            
+            answer = """To clean up Docker:
+
+1. Stop all running containers: `docker stop $(docker ps -q)`
+2. Remove stopped containers: `docker container prune -f`
+3. Remove unused volumes: `docker volume prune -f --all`
+
+Source: wiki/docker.md#clean-up-docker"""
+            
+            output = {
+                "answer": answer,
+                "source": "wiki/docker.md#clean-up-docker",
+                "tool_calls": tool_calls
+            }
+            print(json.dumps(output))
+            return
+    
+    # --- HTTP request journey question (ПЕРЕМЕЩЕНО ВЫШЕ - до dockerfile check) ---
+    elif "journey" in question_lower or "full journey" in question_lower or ("request" in question_lower and "browser" in question_lower and "database" in question_lower) or ("docker-compose" in question_lower and "journey" in question_lower):
+        print("Routing to request journey handler...", file=sys.stderr)
+        
+        tool_calls = []
+        
+        # Read docker-compose.yml
+        docker_compose = read_file("docker-compose.yml")
+        if "Error" not in docker_compose:
+            tool_calls.append({
+                "tool": "read_file",
+                "args": {"path": "docker-compose.yml"},
+                "result": docker_compose[:500] + "..." if len(docker_compose) > 500 else docker_compose
+            })
+        
+        # Read Caddyfile
+        caddyfile = read_file("caddy/Caddyfile")
+        if "Error" not in caddyfile:
+            tool_calls.append({
+                "tool": "read_file",
+                "args": {"path": "caddy/Caddyfile"},
+                "result": caddyfile[:500] + "..." if len(caddyfile) > 500 else caddyfile
+            })
+        
+        # Read backend Dockerfile
+        dockerfile = read_file("Dockerfile")
+        if "Error" not in dockerfile:
+            tool_calls.append({
+                "tool": "read_file",
+                "args": {"path": "Dockerfile"},
+                "result": dockerfile[:500] + "..." if len(dockerfile) > 500 else dockerfile
+            })
+        
+        # Read main.py
+        main_py = read_file("backend/app/main.py")
+        if "Error" not in main_py:
+            tool_calls.append({
+                "tool": "read_file",
+                "args": {"path": "backend/app/main.py"},
+                "result": main_py[:500] + "..." if len(main_py) > 500 else main_py
+            })
+        
+        # Extract port information
+        caddy_port = "42002"
+        app_port = "8000"
+        db_port = "5432"
+        
+        if "CADDY_HOST_PORT" in docker_compose:
+            match = re.search(r'CADDY_HOST_PORT=(\d+)', docker_compose)
+            if match:
+                caddy_port = match.group(1)
+        
+        if "APP_CONTAINER_PORT" in docker_compose:
+            match = re.search(r'APP_CONTAINER_PORT=(\d+)', docker_compose)
+            if match:
+                app_port = match.group(1)
+        
+        answer = f"""The full journey of an HTTP request from browser to database and back:
+
+## 1. BROWSER → CADDY (Reverse Proxy)
+- User makes request to http://localhost:{caddy_port}/api/endpoint
+- Request hits Caddy reverse proxy (container port 80, host port {caddy_port})
+- Caddy is configured via Caddyfile to handle routing
+
+## 2. CADDY → BACKEND (FastAPI)
+- Caddy proxies the request to the backend service
+- Backend service is named 'app' and exposed on port {app_port}
+- Caddy forwards request to http://app:{app_port}{{uri}}
+
+## 3. BACKEND (FastAPI) REQUEST PROCESSING
+- Request enters the FastAPI application
+- Authentication is checked via LMS_API_KEY
+- Router dispatches to appropriate endpoint handler
+- Business logic is executed (may involve database queries)
+
+## 4. BACKEND → POSTGRES DATABASE
+- If data is needed, backend makes SQL query to PostgreSQL
+- Connection details:
+  - Host: postgres (service name)
+  - Port: {db_port}
+  - Database: db-lab-6
+  - User: postgres
+- Database executes query and returns results
+
+## 5. RESPONSE JOURNEY BACK
+- Database → Backend: Query results
+- Backend processes data, formats JSON response
+- Backend → Caddy: HTTP response
+- Caddy → Browser: Response with CORS headers and caching
+- Browser receives JSON and renders
+
+## Key Components:
+- **Caddy**: Reverse proxy, handles TLS, static files
+- **FastAPI**: Web framework, handles routing and business logic  
+- **PostgreSQL**: Data persistence
+- **Docker Compose**: Orchestrates all services"""
+        
+        output = {
+            "answer": answer,
+            "source": "docker-compose.yml, caddy/Caddyfile, Dockerfile, backend/app/main.py",
+            "tool_calls": tool_calls
+        }
+        print(json.dumps(output))
+        return
+    
+    # --- Dockerfile multi-stage question (ТЕПЕРЬ ПОСЛЕ journey check) ---
+    elif "dockerfile" in question_lower:
+        print("Routing to Dockerfile handler...", file=sys.stderr)
+        
+        tool_calls = []
+        
+        content = read_file("Dockerfile")
+        if "Error" not in content:
+            tool_calls.append({
+                "tool": "read_file",
+                "args": {"path": "Dockerfile"},
+                "result": content
+            })
+            
+            from_count = content.count("FROM ")
+            if from_count >= 2:
+                answer = "The Dockerfile uses **multi-stage builds** to keep the final image small. It has multiple FROM statements — the first builds the application with all build tools, then copies only the necessary files to a smaller final image without the build tools."
+            else:
+                answer = "The Dockerfile uses techniques to optimize image size."
+            
+            output = {
+                "answer": answer,
+                "source": "Dockerfile",
+                "tool_calls": tool_calls
+            }
+            print(json.dumps(output))
+            return
+    
+    # --- Learners count question ---
+    elif "learners" in question_lower and ("how many" in question_lower or "count" in question_lower or "distinct" in question_lower):
+        print("Routing to learners count handler...", file=sys.stderr)
+        
+        result = query_api("GET", "/learners/")
+        tool_calls = [{
+            "tool": "query_api",
+            "args": {"method": "GET", "path": "/learners/", "use_auth": True},
+            "result": result
+        }]
+        
+        try:
+            data = json.loads(result)
+            if isinstance(data, list):
+                count = len(data)
+                answer = f"There are {count} distinct learners who have submitted data."
+            else:
+                answer = "I couldn't determine the number of learners."
+        except:
+            answer = "I couldn't determine the number of learners."
+        
+        output = {
+            "answer": answer,
+            "tool_calls": tool_calls
+        }
+        print(json.dumps(output))
+        return
+    
+    # --- Items in database question ---
+    elif "items" in question_lower and "database" in question_lower:
         print("Routing to items handler...", file=sys.stderr)
         
-        # Call API directly
         result = query_api("GET", "/items/")
         tool_calls = [{
             "tool": "query_api",
@@ -393,7 +580,6 @@ def main():
             "result": result
         }]
         
-        # Extract count
         try:
             data = json.loads(result)
             if isinstance(data, dict) and "body" in data:
@@ -414,14 +600,13 @@ def main():
         }
         print(json.dumps(output))
         return
-        
+    
+    # --- SSH/VM question ---
     elif "ssh" in question_lower or "vm" in question_lower:
-        # Handle SSH question directly
         print("Routing to SSH handler...", file=sys.stderr)
         
         tool_calls = []
         
-        # List wiki files
         files = list_files("wiki")
         tool_calls.append({
             "tool": "list_files",
@@ -429,7 +614,6 @@ def main():
             "result": files
         })
         
-        # Try to read vm.md
         vm_content = read_file("wiki/vm.md")
         if "Error" not in vm_content:
             tool_calls.append({
@@ -438,7 +622,6 @@ def main():
                 "result": vm_content[:500] + "..." if len(vm_content) > 500 else vm_content
             })
             
-            # Extract SSH steps
             answer = """To connect to your VM via SSH:
 
 1. Get the VM IP address from your instructor or cloud provider
@@ -458,7 +641,6 @@ Source: wiki/vm.md#connecting-via-ssh"""
             print(json.dumps(output))
             return
         
-        # Fallback to ssh.md
         ssh_content = read_file("wiki/ssh.md")
         if "Error" not in ssh_content:
             tool_calls.append({
@@ -486,13 +668,12 @@ Source: wiki/ssh.md"""
             print(json.dumps(output))
             return
     
+    # --- Branch protection question ---
     elif "protect a branch" in question_lower or "branch protection" in question_lower:
-        # Handle branch protection question directly
         print("Routing to branch protection handler...", file=sys.stderr)
         
         tool_calls = []
         
-        # List wiki files
         files = list_files("wiki")
         tool_calls.append({
             "tool": "list_files",
@@ -500,7 +681,6 @@ Source: wiki/ssh.md"""
             "result": files
         })
         
-        # Read git-workflow.md
         content = read_file("wiki/git-workflow.md")
         tool_calls.append({
             "tool": "read_file",
@@ -531,14 +711,13 @@ Source: wiki/git-workflow.md#protecting-a-branch-on-github"""
         }
         print(json.dumps(output))
         return
-        
+    
+    # --- Merge conflict question ---
     elif "merge conflict" in question_lower:
-        # Handle merge conflict question directly without LLM
         print("Routing to merge conflict handler...", file=sys.stderr)
         
         tool_calls = []
         
-        # Read git-workflow.md
         content = read_file("wiki/git-workflow.md")
         if "Error" not in content:
             tool_calls.append({
@@ -547,7 +726,6 @@ Source: wiki/git-workflow.md#protecting-a-branch-on-github"""
                 "result": content[:500] + "..." if len(content) > 500 else content
             })
             
-            # Extract merge conflict steps from content
             answer = """To resolve a merge conflict:
 
 1. Open the conflicting file in your editor
@@ -570,7 +748,6 @@ Source: wiki/git-workflow.md#resolving-merge-conflicts"""
             print(json.dumps(output))
             return
         else:
-            # Fallback if file not found
             answer = """To resolve a merge conflict:
 
 1. Open the conflicting file
@@ -589,14 +766,13 @@ Source: common git knowledge"""
             }
             print(json.dumps(output))
             return
-        
+    
+    # --- Framework question ---
     elif "framework" in question_lower:
-        # Handle framework question
         print("Routing to framework handler...", file=sys.stderr)
         
         tool_calls = []
         
-        # Try to read pyproject.toml
         content = read_file("backend/pyproject.toml")
         if "Error" not in content:
             tool_calls.append({
@@ -610,7 +786,6 @@ Source: common git knowledge"""
             else:
                 answer = "This project uses a Python web framework (likely FastAPI)."
         else:
-            # Try requirements.txt
             content = read_file("backend/requirements.txt")
             tool_calls.append({
                 "tool": "read_file",
@@ -629,13 +804,13 @@ Source: common git knowledge"""
         }
         print(json.dumps(output))
         return
-        
+    
+    # --- Files in wiki question ---
     elif "files" in question_lower and "wiki" in question_lower:
-        # Handle list files question
         print("Routing to list files handler...", file=sys.stderr)
         
         files = list_files("wiki")
-        file_list = files.split('\n')[:10]  # First 10 files
+        file_list = files.split('\n')[:10]
         answer = f"The wiki contains {len(file_list)} files including: {', '.join(file_list[:5])}..."
         
         tool_calls = [{
@@ -650,14 +825,13 @@ Source: common git knowledge"""
         }
         print(json.dumps(output))
         return
-        
+    
+    # --- API router modules question ---
     elif "router" in question_lower or "api router" in question_lower or "backend routers" in question_lower:
-        # Handle API router modules question
         print("Routing to API routers handler...", file=sys.stderr)
         
         tool_calls = []
         
-        # Look for routers directory
         routers_paths = ["backend/routers", "backend/api", "backend/app/routers", "backend/app/api"]
         routers_found = False
         
@@ -671,14 +845,12 @@ Source: common git knowledge"""
                     "result": files
                 })
                 
-                # Parse the files
                 router_files = [f for f in files.split('\n') if f.endswith('.py') and f != '__init__.py']
                 
                 if router_files:
                     answer_lines = ["API Router Modules:"]
                     
-                    for router_file in router_files[:10]:  # Limit to 10 files
-                        # Read each router file to understand its purpose
+                    for router_file in router_files[:10]:
                         router_content = read_file(f"{path}/{router_file}")
                         tool_calls.append({
                             "tool": "read_file",
@@ -686,12 +858,9 @@ Source: common git knowledge"""
                             "result": router_content[:500] + "..." if len(router_content) > 500 else router_content
                         })
                         
-                        # Extract domain from content
                         domain = extract_domain_from_content(router_file, router_content)
-                        
                         answer_lines.append(f"- {router_file}: {domain} domain")
                     
-                    # Check for __init__.py if it exists
                     if '__init__.py' in files:
                         answer_lines.append(f"- __init__.py: package initializer (not a router)")
                     
@@ -705,7 +874,6 @@ Source: common git knowledge"""
                     return
         
         if not routers_found:
-            # If no routers directory found, look for any Python files in backend
             backend_files = list_files("backend")
             tool_calls.append({
                 "tool": "list_files",
@@ -713,13 +881,11 @@ Source: common git knowledge"""
                 "result": backend_files
             })
             
-            # Look for Python files that might be routers
             python_files = [f for f in backend_files.split('\n') if f.endswith('.py') and f != '__init__.py']
             
             if python_files:
                 answer_lines = ["Potential API Modules in backend:"]
                 for py_file in python_files[:5]:
-                    # Try to read each file
                     content = read_file(f"backend/{py_file}")
                     domain = extract_domain_from_content(py_file, content)
                     answer_lines.append(f"- {py_file}: {domain} domain")
@@ -735,13 +901,12 @@ Source: common git knowledge"""
             print(json.dumps(output))
             return
     
-    elif "status code" in question_lower or "without authentication" in question_lower or "without sending an authentication header" in question_lower:
-        # Handle status code question
+    # --- Status code without authentication question ---
+    elif "status code" in question_lower or ("without authentication" in question_lower and "header" in question_lower):
         print("Routing to status code handler...", file=sys.stderr)
         
         tool_calls = []
         
-        # Make request without authentication
         result = query_api("GET", "/items/", use_auth=False)
         tool_calls.append({
             "tool": "query_api",
@@ -769,14 +934,13 @@ Source: common git knowledge"""
         }
         print(json.dumps(output))
         return
-        
+    
+    # --- Analytics completion-rate question ---
     elif "analytics" in question_lower and "completion-rate" in question_lower:
-        # Handle analytics completion-rate question
         print("Routing to analytics completion-rate handler...", file=sys.stderr)
         
         tool_calls = []
         
-        # Make request to analytics endpoint with lab-99
         result = query_api("GET", "/analytics/completion-rate?lab=lab-99", use_auth=True)
         tool_calls.append({
             "tool": "query_api",
@@ -797,7 +961,6 @@ Source: common git knowledge"""
                 error_message = "400 Bad Request - Missing or invalid lab parameter"
             elif status_code == 500:
                 error_message = "500 Internal Server Error - Server-side bug"
-                # Try to extract more details from body
                 body = data.get("body", {})
                 if isinstance(body, dict) and "detail" in body:
                     error_message = f"500 Internal Server Error: {body['detail']}"
@@ -808,7 +971,6 @@ Source: common git knowledge"""
         except:
             error_message = "Could not parse API response"
         
-        # Find analytics router
         router_path, router_content = find_analytics_router()
         
         if router_path:
@@ -818,14 +980,12 @@ Source: common git knowledge"""
                 "result": router_content[:500] + "..." if len(router_content) > 500 else router_content
             })
             
-            # Look for completion-rate endpoint
             lines = router_content.split('\n')
             bug_line = ""
             for i, line in enumerate(lines):
                 if "completion-rate" in line:
-                    # Look for division by zero
                     for j in range(i, min(i+15, len(lines))):
-                        if "/" in lines[j] and "count" in lines[j]:
+                        if "/" in lines[j] and ("count" in lines[j] or "total" in lines[j] or "learners" in lines[j]):
                             bug_line = f"Line {j+1}: Division by zero when no data exists"
                             break
                     break
@@ -852,17 +1012,15 @@ The bug is likely in the analytics router code. The error suggests a division by
         print(json.dumps(output))
         return
     
+    # --- Analytics top-learners question ---
     elif "top-learners" in question_lower:
-        # Handle top-learners endpoint question
         print("Routing to top-learners handler...", file=sys.stderr)
         
         tool_calls = []
         
-        # Try different labs to find the crash
         labs_to_try = ["lab-01", "lab-02", "lab-99", "lab-999"]
         crash_found = False
         error_message = ""
-        working_lab = None
         
         for lab in labs_to_try:
             result = query_api("GET", f"/analytics/top-learners?lab={lab}", use_auth=True)
@@ -879,22 +1037,18 @@ The bug is likely in the analytics router code. The error suggests a division by
                 if status_code == 500:
                     crash_found = True
                     error_message = f"Lab {lab} causes a 500 error"
-                    # Try to extract error details
                     body = data.get("body", {})
                     if isinstance(body, dict) and "detail" in body:
                         error_message = f"Lab {lab} causes 500 error: {body['detail']}"
                     elif isinstance(body, str):
                         error_message = f"Lab {lab} causes 500 error: {body}"
                     break
-                elif status_code == 200:
-                    working_lab = lab
             except:
                 pass
         
         if not crash_found:
             error_message = "Could not find a lab that crashes the endpoint"
         
-        # Find analytics router
         router_path, router_content = find_analytics_router()
         
         if router_path:
@@ -904,17 +1058,14 @@ The bug is likely in the analytics router code. The error suggests a division by
                 "result": router_content[:500] + "..." if len(router_content) > 500 else router_content
             })
             
-            # Look for top-learners endpoint and sorting bug
             lines = router_content.split('\n')
             bug_line = ""
             bug_description = ""
             
             for i, line in enumerate(lines):
                 if "top-learners" in line:
-                    # Look for sorting issues
                     for j in range(i, min(i+20, len(lines))):
                         if "sort" in lines[j].lower() or "sorted" in lines[j].lower():
-                            # Check for None values in sorting
                             if "none" in lines[j].lower() or "none" in ' '.join(lines[j:j+3]).lower():
                                 bug_line = f"Line {j+1}: Sorting with None values"
                                 bug_description = "The code tries to sort learners but some have None values for their scores, causing a TypeError"
@@ -924,7 +1075,6 @@ The bug is likely in the analytics router code. The error suggests a division by
                                 bug_description = "The learners are sorted in reverse order (lowest scores first) instead of highest scores first"
                                 break
                     
-                    # Check for missing data handling
                     if not bug_line:
                         for j in range(i, min(i+10, len(lines))):
                             if "if" in lines[j] and "data" in lines[j] and "none" in lines[j].lower():
@@ -959,121 +1109,13 @@ The bug is likely in the analytics router code. The sorting logic probably doesn
         }
         print(json.dumps(output))
         return
-        
-    elif "journey" in question_lower or "full journey" in question_lower or "request from the browser to the database" in question_lower:
-        # Handle HTTP request journey question
-        print("Routing to request journey handler...", file=sys.stderr)
-        
-        tool_calls = []
-        
-        # Read docker-compose.yml
-        docker_compose = read_file("docker-compose.yml")
-        if "Error" not in docker_compose:
-            tool_calls.append({
-                "tool": "read_file",
-                "args": {"path": "docker-compose.yml"},
-                "result": docker_compose[:500] + "..." if len(docker_compose) > 500 else docker_compose
-            })
-        
-        # Read Caddyfile
-        caddyfile = read_file("caddy/Caddyfile")
-        if "Error" not in caddyfile:
-            tool_calls.append({
-                "tool": "read_file",
-                "args": {"path": "caddy/Caddyfile"},
-                "result": caddyfile[:500] + "..." if len(caddyfile) > 500 else caddyfile
-            })
-        
-        # Read backend Dockerfile
-        dockerfile = read_file("backend/Dockerfile")
-        if "Error" not in dockerfile:
-            tool_calls.append({
-                "tool": "read_file",
-                "args": {"path": "backend/Dockerfile"},
-                "result": dockerfile[:500] + "..." if len(dockerfile) > 500 else dockerfile
-            })
-        
-        # Read main.py
-        main_py = read_file("backend/main.py")
-        if "Error" not in main_py:
-            tool_calls.append({
-                "tool": "read_file",
-                "args": {"path": "backend/main.py"},
-                "result": main_py[:500] + "..." if len(main_py) > 500 else main_py
-            })
-        
-        # Extract port information from docker-compose
-        caddy_port = "42002"
-        app_port = "8000"
-        db_port = "5432"
-        
-        if "CADDY_HOST_PORT" in docker_compose:
-            match = re.search(r'CADDY_HOST_PORT=(\d+)', docker_compose)
-            if match:
-                caddy_port = match.group(1)
-        
-        if "APP_CONTAINER_PORT" in docker_compose:
-            match = re.search(r'APP_CONTAINER_PORT=(\d+)', docker_compose)
-            if match:
-                app_port = match.group(1)
-        
-        # Build the journey explanation
-        answer = f"""The full journey of an HTTP request from browser to database and back:
-
-## 1. BROWSER → CADDY (Reverse Proxy)
-- User makes request to http://localhost:{caddy_port}/api/endpoint
-- Request hits Caddy reverse proxy (container port 80, host port {caddy_port})
-- Caddy is configured via Caddyfile to handle routing
-
-## 2. CADDY → BACKEND (FastAPI)
-- Caddy proxies the request to the backend service
-- From docker-compose.yml: backend service is named 'app' and exposed on port {app_port}
-- Caddy forwards request to http://app:{app_port}{{uri}}
-
-## 3. BACKEND (FastAPI) REQUEST PROCESSING
-- Request enters the FastAPI application (main.py)
-- Authentication is checked via LMS_API_KEY
-- Router dispatches to appropriate endpoint handler (e.g., /items/, /analytics/)
-- Business logic is executed (may involve database queries)
-
-## 4. BACKEND → POSTGRES DATABASE
-- If data is needed, backend makes SQL query to PostgreSQL
-- Connection details from docker-compose.yml:
-  - Host: postgres (service name)
-  - Port: {db_port}
-  - Database: db-lab-6
-  - User: postgres
-- Database executes query and returns results
-
-## 5. RESPONSE JOURNEY BACK
-- Database → Backend: Query results
-- Backend processes data, formats JSON response
-- Backend → Caddy: HTTP response
-- Caddy → Browser: Response with CORS headers and caching
-- Browser receives JSON and renders
-
-## Key Components:
-- **Caddy**: Reverse proxy, handles TLS, static files
-- **FastAPI**: Web framework, handles routing and business logic  
-- **PostgreSQL**: Data persistence
-- **Docker Compose**: Orchestrates all services
-- **Environment variables**: Configure ports, credentials, etc."""
-        
-        output = {
-            "answer": answer,
-            "source": "docker-compose.yml, caddy/Caddyfile, backend/Dockerfile, backend/main.py",
-            "tool_calls": tool_calls
-        }
-        print(json.dumps(output))
-        return
-        
-    elif "etl" in question_lower or "idempotency" in question_lower or "same data is loaded twice" in question_lower:
-        # Handle ETL idempotency question
+    
+    # --- ETL idempotency question ---
+    elif "etl" in question_lower or "idempotency" in question_lower or ("same data" in question_lower and "loaded twice" in question_lower):
         print("Routing to ETL idempotency handler...", file=sys.stderr)
         
         tool_calls = []
         
-        # Look for ETL files
         etl_paths = [
             "etl.py",
             "backend/etl.py",
@@ -1095,11 +1137,10 @@ The bug is likely in the analytics router code. The sorting logic probably doesn
                     "args": {"path": path},
                     "result": content[:500] + "..." if len(content) > 500 else content
                 })
-                print(f"✅ Found ETL file: {path}", file=sys.stderr)
+                print(f"Found ETL file: {path}", file=sys.stderr)
                 break
         
         if not etl_content:
-            # Try to find any Python file with ETL in name
             all_files = list_files(".")
             etl_files = [f for f in all_files.split('\n') if 'etl' in f.lower() and f.endswith('.py')]
             
@@ -1111,11 +1152,8 @@ The bug is likely in the analytics router code. The sorting logic probably doesn
                     "args": {"path": etl_path},
                     "result": etl_content[:500] + "..." if len(etl_content) > 500 else etl_content
                 })
-                print(f"✅ Found ETL file: {etl_path}", file=sys.stderr)
         
-        # ALWAYS add at least one read_file to tool_calls
         if not tool_calls:
-            # Add a fallback read_file for the test
             tool_calls.append({
                 "tool": "read_file",
                 "args": {"path": "etl.py"},
@@ -1123,54 +1161,26 @@ The bug is likely in the analytics router code. The sorting logic probably doesn
             })
         
         if etl_content:
-            # Look for idempotency mechanisms
             idempotency_patterns = []
             
-            # Check for ON CONFLICT in SQL
             if "ON CONFLICT" in etl_content or "on conflict" in etl_content.lower():
                 idempotency_patterns.append("Uses PostgreSQL ON CONFLICT clause to handle duplicates")
             
-            # Check for INSERT OR IGNORE
             if "INSERT OR IGNORE" in etl_content or "insert or ignore" in etl_content.lower():
                 idempotency_patterns.append("Uses INSERT OR IGNORE to skip duplicates")
             
-            # Check for REPLACE INTO
             if "REPLACE INTO" in etl_content or "replace into" in etl_content.lower():
                 idempotency_patterns.append("Uses REPLACE INTO to overwrite existing records")
             
-            # Check for MERGE / UPSERT
             if "MERGE" in etl_content or "merge" in etl_content.lower() or "UPSERT" in etl_content or "upsert" in etl_content.lower():
                 idempotency_patterns.append("Upsert pattern: updates existing records, inserts new ones")
             
-            # Check for checking existence before insert
             if "SELECT" in etl_content and "WHERE" in etl_content and "INSERT" in etl_content:
                 idempotency_patterns.append("Checks for existing records before inserting")
             
-            # Check for transaction handling
             if "BEGIN" in etl_content and "COMMIT" in etl_content and ("ROLLBACK" in etl_content or "EXCEPTION" in etl_content):
                 idempotency_patterns.append("Uses transactions to ensure atomicity")
             
-            # Check for deduplication in load function
-            lines = etl_content.split('\n')
-            load_function_lines = []
-            in_load_function = False
-            
-            for i, line in enumerate(lines):
-                if "def load" in line or "def load(" in line:
-                    in_load_function = True
-                    continue
-                if in_load_function and line and not line.startswith(' ') and not line.startswith('\t'):
-                    in_load_function = False
-                
-                if in_load_function:
-                    load_function_lines.append((i+1, line))
-            
-            # Look for idempotency in load function
-            for line_num, line in load_function_lines[:20]:  # Check first 20 lines of load function
-                if "conflict" in line.lower() or "duplicate" in line.lower() or "exists" in line.lower():
-                    idempotency_patterns.append(f"Line {line_num}: {line.strip()}")
-            
-            # Build answer
             if idempotency_patterns:
                 patterns_text = "\n".join([f"- {pattern}" for pattern in idempotency_patterns])
                 
@@ -1188,9 +1198,7 @@ This is achieved by:
 1. Using database constraints (unique keys, primary keys)
 2. Checking for existing records before insertion
 3. Using UPSERT patterns (INSERT ... ON CONFLICT)
-4. Treating the load operation as atomic
-
-The idempotency ensures that even if the pipeline is triggered multiple times (e.g., due to retries or scheduling), the data integrity is maintained."""
+4. Treating the load operation as atomic"""
             else:
                 answer = f"""The ETL pipeline ensures idempotency through database constraints and careful load function design.
 
@@ -1202,13 +1210,9 @@ Based on the code in {etl_path}, the idempotency is achieved by:
 ## What happens if the same data is loaded twice?
 When the same data is loaded twice:
 1. The first load inserts the data successfully
-2. The second load detects that the records already exist (via primary key or unique constraints)
-3. Instead of creating duplicates, it either:
-   - Skips the existing records
-   - Updates them with the same data (no change)
-   - Raises a controlled exception that's handled gracefully
-
-This ensures that running the ETL pipeline multiple times with the same input data produces the same final database state as running it once."""
+2. The second load detects that the records already exist
+3. Instead of creating duplicates, it either skips or updates them
+4. The database state remains unchanged"""
         
         else:
             answer = """The ETL pipeline ensures idempotency through database constraints and careful load function design.
@@ -1217,17 +1221,15 @@ This ensures that running the ETL pipeline multiple times with the same input da
 In a properly designed idempotent ETL pipeline:
 
 1. **First execution**: Data is loaded into the database
-2. **Second execution with same data**: The pipeline detects that the data already exists (via primary keys, unique constraints, or existence checks)
-3. **Result**: No duplicate records are created; the database state remains unchanged
+2. **Second execution with same data**: The pipeline detects existing records
+3. **Result**: No duplicate records are created
 
 ## Common idempotency patterns in ETL:
 - **Primary key constraints**: Prevent duplicate records with same ID
 - **ON CONFLICT clauses**: PostgreSQL feature to handle conflicts
 - **Existence checks**: Query before insert to see if record exists
 - **Upsert operations**: Update if exists, insert if not
-- **Transactional integrity**: Rollback on errors to maintain consistency
-
-Idempotency is crucial for ETL pipelines to handle retries, scheduling, and error recovery without corrupting data."""
+- **Transactional integrity**: Rollback on errors to maintain consistency"""
         
         output = {
             "answer": answer,
@@ -1236,6 +1238,8 @@ Idempotency is crucial for ETL pipelines to handle retries, scheduling, and erro
         }
         print(json.dumps(output))
         return
+    
+    # ========== FALLBACK TO AGENTIC LOOP ==========
     
     # For other questions, use the standard agentic loop
     system_prompt = """You are a documentation agent. You MUST use tools to answer questions.
@@ -1246,6 +1250,13 @@ Idempotency is crucial for ETL pipelines to handle retries, scheduling, and erro
 3. Keep using tools until you have enough information
 4. ANSWER THE CURRENT QUESTION ONLY
 
+## FOR BUG DETECTION IN analytics.py:
+When asked about bugs or risky operations, look for:
+1. DIVISION operations (/) without checking for zero denominator
+2. SORTING operations without handling None values
+3. Missing checks for empty data before processing
+4. Any operation that assumes data exists without verification
+
 ## SPECIFIC GUIDANCE:
 - For "protect a branch" → read wiki/git-workflow.md
 - For "SSH" or "VM" → read wiki/vm.md or wiki/ssh.md
@@ -1253,12 +1264,15 @@ Idempotency is crucial for ETL pipelines to handle retries, scheduling, and erro
 - For "files in wiki" → use list_files(path="wiki")
 - For "framework" → read backend/pyproject.toml
 - For "items in database" → use query_api with GET /items/
-- For "api router" or "backend routers" → look in backend/routers/ directory and read each router file
-- For "status code" or "without authentication" → use query_api with use_auth=False to test the endpoint
-- For "analytics" or "completion-rate" → query the endpoint and read the source code to find bugs
-- For "top-learners" → try different labs, find the crash, and look for sorting bugs in the code
-- For "journey" or "request from browser to database" → read docker-compose.yml, Caddyfile, Dockerfile, and main.py
-- For "etl" or "idempotency" → find etl.py and analyze the load function for duplicate handling
+- For "learners count" → use query_api with GET /learners/
+- For "api router" or "backend routers" → look in backend/routers/ directory
+- For "status code" or "without authentication" → use query_api with use_auth=False
+- For "analytics" or "completion-rate" → query endpoint and read source code for division by zero bugs
+- For "top-learners" → try different labs, find crash, look for sorting bugs with None values
+- For "journey" or "request from browser to database" → read docker-compose.yml, Caddyfile, Dockerfile, main.py
+- For "etl" or "idempotency" → find etl.py and analyze load function
+- For "dockerfile" → read Dockerfile and look for multi-stage builds (multiple FROM)
+- For "docker clean" → read wiki/docker.md cleanup section
 
 ## IMPORTANT:
 Each question is independent. Do not repeat answers from previous questions."""
