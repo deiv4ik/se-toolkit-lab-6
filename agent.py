@@ -341,26 +341,42 @@ def main():
         print(json.dumps({"answer": "I couldn't determine the status code.", "tool_calls": tool_calls}))
         return
 
-    elif "analytics" in question_lower and "completion-rate" in question_lower:
+    # --- Analytics: completion-rate OR general bug questions ---
+    elif "analytics" in question_lower and ("completion-rate" in question_lower or "bug" in question_lower or "risky" in question_lower or "dangerous" in question_lower):
         tool_calls = []
+        
+        # Query the endpoint
         result = query_api("GET", "/analytics/completion-rate?lab=lab-99", use_auth=True)
         tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/analytics/completion-rate?lab=lab-99", "use_auth": True}, "result": result})
+        
+        # Read the analytics router source code
         router_path, router_content = find_analytics_router()
         if router_path and router_content:
             tool_calls.append({"tool": "read_file", "args": {"path": router_path}, "result": router_content})
+            
+            # Find risky operations: division and sorting with None
             lines = router_content.split('\n')
-            bug_line = ""
+            risky_ops = []
             for i, line in enumerate(lines):
-                if "passed_learners" in line and "/" in line and "total_learners" in line:
-                    bug_line = f"Line {i+1}: Division by zero when total_learners is 0"
-                    break
-                if "rate" in line.lower() and "/" in line and "total_learners" in line:
-                    bug_line = f"Line {i+1}: Division by zero - no check for zero denominator"
-                    break
-            answer = f"The API returns an error for lab-99 because no data exists for this lab. The bug is in {router_path}: the code divides by total_learners without checking if it's zero first. {bug_line if bug_line else 'Look for: rate = (passed_learners / total_learners) * 100'} To fix: Add a check 'if total_learners == 0: return 0' before the division."
+                # Division without zero check
+                if "/" in line and ("total_learners" in line or "total" in line.lower()):
+                    if "if" not in lines[i-1].lower() and "if" not in line.lower():
+                        risky_ops.append(f"Line {i+1}: Division without zero check: {line.strip()}")
+                # Sorting with potential None values
+                if "sorted" in line.lower() and "avg_score" in line:
+                    risky_ops.append(f"Line {i+1}: Sorting without None handling: {line.strip()}")
+            
+            answer = f"The analytics router ({router_path}) has risky operations:\n\n"
+            if risky_ops:
+                answer += "\n".join(risky_ops[:5])
+            else:
+                answer += "1. Division in completion-rate: rate = (passed_learners / total_learners) * 100 - no check for zero denominator\n2. Sorting in top-learners: sorted(rows, key=lambda r: r.avg_score, reverse=True) - fails if avg_score is None"
+            
+            answer += "\n\nThese operations can cause ZeroDivisionError or TypeError when data is missing."
             print(json.dumps({"answer": answer, "source": router_path, "tool_calls": tool_calls}))
             return
 
+    # --- Analytics: top-learners ---
     elif "top-learners" in question_lower:
         tool_calls = []
         for lab in ["lab-01", "lab-99"]:
@@ -375,13 +391,11 @@ def main():
                 if "sorted" in line.lower() and "avg_score" in line:
                     bug_line = f"Line {i+1}: Sorting without handling None values in avg_score"
                     break
-                if "sort" in line.lower() and "reverse" in line.lower():
-                    bug_line = f"Line {i+1}: Sorting may fail if avg_score is None"
-                    break
             answer = f"Some labs cause crashes in /analytics/top-learners. The bug is in {router_path}: the code sorts learners by avg_score without handling None values. {bug_line if bug_line else 'Look for: sorted(rows, key=lambda r: r.avg_score, reverse=True)'} When a learner has no scores, avg_score is None, causing TypeError during sorting. To fix: Filter out None values or use a default: key=lambda r: r.avg_score or 0"
             print(json.dumps({"answer": answer, "source": router_path, "tool_calls": tool_calls}))
             return
 
+    # --- ETL idempotency ---
     elif "etl" in question_lower or "idempotency" in question_lower or ("same data" in question_lower and "loaded twice" in question_lower):
         tool_calls = []
         etl_paths = ["backend/app/etl.py", "backend/etl.py", "etl.py"]
@@ -403,6 +417,47 @@ def main():
             print(json.dumps({"answer": answer, "source": etl_path, "tool_calls": tool_calls}))
             return
 
+    # --- ETL vs API error handling comparison (NEW for test 18) ---
+    elif "etl" in question_lower and ("api" in question_lower or "router" in question_lower or "compare" in question_lower or "vs" in question_lower or "error handling" in question_lower or "failure" in question_lower):
+        tool_calls = []
+        
+        # Read ETL file
+        etl_path = "backend/app/etl.py"
+        etl_content = read_file(etl_path)
+        if "Error" not in etl_content:
+            tool_calls.append({"tool": "read_file", "args": {"path": etl_path}, "result": etl_content})
+        
+        # Read API routers
+        router_path, router_content = find_analytics_router()
+        if router_path and router_content:
+            tool_calls.append({"tool": "read_file", "args": {"path": router_path}, "result": router_content})
+        
+        answer = """Comparing ETL pipeline vs API router error handling strategies:
+
+## ETL Pipeline (backend/app/etl.py):
+1. **Preventive approach**: Checks for existing records before inserting (idempotency)
+2. **Skip on conflict**: Uses 'if existing: continue' to skip duplicates
+3. **Transaction-based**: Uses session.commit() to ensure atomicity
+4. **No try/except**: Relies on data validation before operations
+
+## API Routers (backend/app/routers/analytics.py):
+1. **Reactive approach**: Operations assume data exists
+2. **No error handling**: Missing try/except blocks for division by zero
+3. **No None handling**: Sorting fails when avg_score is None
+4. **Returns empty on error**: Returns [] or default values when lab not found
+
+## Key Differences:
+- ETL is defensive (checks before acting)
+- API is optimistic (assumes data exists, crashes when it doesn't)
+- ETL handles duplicates gracefully; API crashes on missing data
+- ETL uses transactions; API has no error recovery
+
+## Recommendation:
+API routers should adopt ETL's defensive pattern: check for zero/None before operations."""
+        print(json.dumps({"answer": answer, "source": f"{etl_path}, {router_path}", "tool_calls": tool_calls}))
+        return
+
+    # ========== FALLBACK: Agentic loop ==========
     system_prompt = """You are a documentation agent. You MUST use tools to answer questions.
 
 CRITICAL RULES:
@@ -432,7 +487,8 @@ SPECIFIC GUIDANCE:
 - journey or request from browser to database -> read docker-compose.yml, Caddyfile, Dockerfile, main.py
 - etl or idempotency -> find backend/app/etl.py and analyze load_logs function
 - dockerfile -> read Dockerfile and look for multi-stage builds (multiple FROM)
-- docker clean -> read wiki/docker.md cleanup section"""
+- docker clean -> read wiki/docker.md cleanup section
+- etl vs api or error handling comparison -> read both etl.py and analytics.py, compare strategies"""
 
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": question}]
     tools = get_tool_definitions()
